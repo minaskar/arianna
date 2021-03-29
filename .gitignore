@@ -1,2 +1,3 @@
 examples/
 arianna.egg-info/
+arianna/__pycache__/
