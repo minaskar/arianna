@@ -9,11 +9,12 @@ class samples:
 
     '''
 
-    def __init__(self, ndim, nwalkers):
+    def __init__(self, ntemps, nwalkers, ndim):
         self.initialised = False
         self.index = 0
         self.ndim = ndim
         self.nwalkers = nwalkers
+        self.ntemps = ntemps
 
 
     def extend(self, n):
@@ -23,43 +24,39 @@ class samples:
             n (int) : Extend space by n slots.
         """
         if self.initialised:
-            ext = np.empty((n,self.nwalkers,self.ndim))
+            ext = np.empty((n,self.ntemps,self.nwalkers,self.ndim))
             self.samples = np.concatenate((self.samples,ext),axis=0)
 
-            ext = np.empty((n,self.nwalkers))
+            ext = np.empty((n,self.ntemps,self.nwalkers))
             self.logp = np.concatenate((self.logp,ext),axis=0)
 
-            ext = np.empty((n,self.nwalkers))
+            ext = np.empty((n,self.ntemps,self.nwalkers))
             self.loglp = np.concatenate((self.loglp,ext),axis=0)
 
-            ext = np.empty((n,self.nwalkers))
+            ext = np.empty((n,self.ntemps,self.nwalkers))
             self.logll = np.concatenate((self.logll,ext),axis=0)
 
-            ext = np.empty((n,self.nwalkers))
+            ext = np.empty((n,self.ntemps))
             self.nexps = np.concatenate((self.nexps,ext),axis=0)
 
-            ext = np.empty((n,self.nwalkers))
+            ext = np.empty((n,self.ntemps))
             self.ncons = np.concatenate((self.ncons,ext),axis=0)
 
-            ext = np.empty((n,self.nwalkers))
-            self.idx = np.concatenate((self.idx,ext),axis=0)
-
-            ext = np.empty((n,self.nwalkers-1))
+            ext = np.empty((n,self.ntemps-1))
             self.accept = np.concatenate((self.accept,ext),axis=0)
 
         else:
-            self.samples = np.empty((n,self.nwalkers,self.ndim))
-            self.logp = np.empty((n,self.nwalkers))
-            self.loglp = np.empty((n,self.nwalkers))
-            self.logll = np.empty((n,self.nwalkers))
-            self.nexps = np.empty((n,self.nwalkers))
-            self.ncons = np.empty((n,self.nwalkers))
-            self.idx = np.empty((n,self.nwalkers))
-            self.accept = np.empty((n,self.nwalkers-1))
+            self.samples = np.empty((n,self.ntemps,self.nwalkers,self.ndim))
+            self.logp = np.empty((n,self.ntemps,self.nwalkers))
+            self.loglp = np.empty((n,self.ntemps,self.nwalkers))
+            self.logll = np.empty((n,self.ntemps,self.nwalkers))
+            self.nexps = np.empty((n,self.ntemps))
+            self.ncons = np.empty((n,self.ntemps))
+            self.accept = np.empty((n,self.ntemps-1))
             self.initialised = True
 
 
-    def save(self, x, logp, loglp, logll, idx, nexp, ncon, accept):
+    def save(self, x, logp, loglp, logll, nexp, ncon, accept):
         """
         Save sample into the storage.
         Args:
@@ -72,7 +69,6 @@ class samples:
         self.logll[self.index] = logll
         self.nexps[self.index] = nexp
         self.ncons[self.index] = ncon
-        self.idx[self.index] = idx
         self.accept[self.index] = accept
         self.index += 1
 

@@ -21,110 +21,69 @@ class progress_bar:
             self.progress_bar.close()
 
 
-
-
-class OnlineCovariance:
+def AdjustBetas(time, betas0, ratios):
     """
-    A class to calculate the mean and the covariance matrix
-    of the incrementally added, n-dimensional data.
-    """
-    def __init__(self, order):
-        """
-        Parameters
-        ----------
-        order: int, The order (=="number of features") of the incrementally added
-        dataset and of the resulting covariance matrix.
-        """
-        self._order = order
-        self._shape = (order, order)
-        self._identity = np.identity(order)
-        self._ones = np.ones(order)
-        self._count = 0
-        self._mean = np.zeros(order)
-        self._cov = np.zeros(self._shape)
+    Execute temperature adjustment according to dynamics outlined in
+    `arXiv:1501.05823 <http://arxiv.org/abs/1501.05823>`_.
+     """
+
+    betas = betas0.copy()
+
+    # Modulate temperature adjustments with a hyperbolic decay.
+    kappa = 10000/(time+10000)/1.0
+
+    # Construct temperature adjustments.
+    dSs = kappa * (ratios[:-1] - ratios[1:])
+
+    # Compute new ladder (hottest and coldest chains don't move).
+    deltaTs = np.diff(1 / betas[:-1])
+    deltaTs *= np.exp(dSs)
+    betas[1:-1] = 1 / (np.cumsum(deltaTs) + 1 / betas[0])
+
+    return betas
+
+
+def SwapReplicas(X, Zp, Zl, betas, probability):
+
+    X = X.copy()
+    Zp = Zp.copy()
+    Zl = Zl.copy()
+
+    ntemps, nwalkers, ndim = np.shape(X)
+
+    accept = np.zeros(ntemps - 1)
+    ratio = np.zeros(ntemps - 1)
+
+    if np.random.uniform() > 1.0 - probability:
+
+        schedule = np.arange(ntemps - 1, 0, -1)
+        walkers_prev = np.arange(nwalkers)
+        walkers = np.arange(nwalkers)
+
+        for j in schedule:
+            np.random.shuffle(walkers_prev)
+            np.random.shuffle(walkers)
+            for k in walkers:
+                k_prev = walkers_prev[k]
+                alpha = min(1, np.exp((betas[j-1]-betas[j])*(Zl[j,k]-Zl[j-1,k_prev])))
+                accept[j-1] += alpha
+
+                if alpha > np.random.uniform(0,1):
+                    Zl_temp = np.copy(Zl[j-1, k_prev])
+                    Zl[j-1, k_prev] = np.copy(Zl[j, k])
+                    Zl[j, k] = np.copy(Zl_temp)
+
+                    Zp_temp = np.copy(Zp[j-1, k_prev])
+                    Zp[j-1, k_prev] = np.copy(Zp[j, k])
+                    Zp[j, k] = np.copy(Zp_temp)         
+                        
+                    X_temp = np.copy(X[j-1, k_prev])
+                    X[j-1, k_prev] = np.copy(X[j, k])
+                    X[j, k] = np.copy(X_temp)
+
+                    ratio[j-1] += 1.0
         
-    @property
-    def count(self):
-        """
-        int, The number of observations that has been added
-        to this instance of OnlineCovariance.
-        """
-        return self._count 
-   
-    @property
-    def mean(self):
-        """
-        double, The mean of the added data.
-        """        
-        return self._mean
+        accept /= nwalkers 
+        ratio /= nwalkers
 
-    @property
-    def cov(self):
-        """
-        array_like, The covariance matrix of the added data.
-        """
-        return self._cov
-
-    @property
-    def corrcoef(self):
-        """
-        array_like, The normalized covariance matrix of the added data.
-        Consists of the Pearson Correlation Coefficients of the data's features.
-        """
-        if self._count < 1:
-            return None
-        variances = np.diagonal(self._cov)
-        denomiator = np.sqrt(variances[np.newaxis,:] * variances[:,np.newaxis])
-        return self._cov / denomiator
-
-    def add(self, observation):
-        """
-        Add the given observation to this object.
-        
-        Parameters
-        ----------
-        observation: array_like, The observation to add.
-        """
-        if self._order != len(observation):
-            raise ValueError(f'Observation to add must be of size {self._order}')
-            
-        self._count += 1
-        delta_at_nMin1 = np.array(observation - self._mean)
-        self._mean += delta_at_nMin1 / self._count
-        weighted_delta_at_n = np.array(observation - self._mean) / self._count
-        shp = (self._order, self._order)
-        D_at_n = np.broadcast_to(weighted_delta_at_n, self._shape).T
-        D = (delta_at_nMin1 * self._identity).dot(D_at_n.T)
-        self._cov = self._cov * (self._count - 1) / self._count + D
-    
-    def merge(self, other):
-        """
-        Merges the current object and the given other object into a new OnlineCovariance object.
-
-        Parameters
-        ----------
-        other: OnlineCovariance, The other OnlineCovariance to merge this object with.
-
-        Returns
-        -------
-        OnlineCovariance
-        """
-        if other._order != self._order:
-            raise ValueError(
-                   f'''
-                   Cannot merge two OnlineCovariances with different orders.
-                   ({self._order} != {other._order})
-                   ''')
-            
-        merged_cov = OnlineCovariance(self._order)
-        merged_cov._count = self.count + other.count
-        count_corr = (other.count * self.count) / merged_cov._count
-        merged_cov._mean = (self.mean/other.count + other.mean/self.count) * count_corr
-        flat_mean_diff = self._mean - other._mean
-        shp = (self._order, self._order)
-        mean_diffs = np.broadcast_to(flat_mean_diff, self._shape).T
-        merged_cov._cov = (self._cov * self.count \
-                           + other._cov * other._count \
-                           + mean_diffs * mean_diffs.T * count_corr) \
-                          / merged_cov.count
-        return merged_cov
+    return X, Zp, Zl, accept, ratio

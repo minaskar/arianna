@@ -12,8 +12,8 @@ from .samples import samples
 from .fwrapper import _FunctionWrapper
 from .fwrapper import _LogPosteriorWrapper
 from .autocorr import AutoCorrTime
-from .moves import get_direction, get_direction2
-from .tools import progress_bar, OnlineCovariance
+from .moves import get_direction, get_past_direction
+from .tools import progress_bar, AdjustBetas, SwapReplicas
 
 class EnsembleSampler:
     """
@@ -44,6 +44,7 @@ class EnsembleSampler:
         light_mode (bool): If True (default is False) then no expansions are performed after the tuning phase. This can significantly reduce the number of log likelihood evaluations but works best in target distributions that are apprroximately Gaussian.
     """
     def __init__(self,
+                 ntemps,
                  nwalkers,
                  ndim,
                  loglike_fn,
@@ -65,7 +66,10 @@ class EnsembleSampler:
                  verbose=True,
                  check_walkers=True,
                  shuffle_ensemble=True,
-                 light_mode=False):
+                 light_mode=False,
+                 adapt=False,
+                 hist=0.5,
+                 replicas=3):
 
         # Set up logger
         self.logger = logging.getLogger()
@@ -82,14 +86,15 @@ class EnsembleSampler:
         self.logprob_fn = _LogPosteriorWrapper(loglike_fn, loglike_args, loglike_kwargs, logprior_fn, logprior_args, logprior_kwargs)
 
         # Set up walkers
+        self.ntemps = int(ntemps)
         self.nwalkers = int(nwalkers)
         self.ndim = int(ndim)
         self.check_walkers = check_walkers
-        if self.check_walkers:
-            if self.nwalkers < 2 * self.ndim:
-                raise ValueError("Please provide at least (2 * ndim) walkers.")
-            elif self.nwalkers % 2 == 1:
-                raise ValueError("Please provide an even number of walkers.")
+        #if self.check_walkers:
+        #    if self.nwalkers < 2 * self.ndim:
+        #        raise ValueError("Please provide at least (2 * ndim) walkers.")
+        #    elif self.nwalkers % 2 == 1:
+        #        raise ValueError("Please provide an even number of walkers.")
         self.shuffle_ensemble = shuffle_ensemble
 
         # Set up Slice parameters
@@ -107,17 +112,18 @@ class EnsembleSampler:
         # Set up temperature swap frequency
         self.alpha = alpha
         if betas is None:
-            self.betas = ((np.arange(1,self.nwalkers+1)-1)/(self.nwalkers - 1))**(1/0.3)
+            self.betas = ((np.arange(1,self.ntemps+1)-1)/(self.ntemps - 1))**(1/0.3)
             self.betas = self.betas[::-1]
         else:
             self.betas = betas
+        self.betas_flat = np.repeat(self.betas,self.nwalkers)
 
         # Set up pool of workers
         self.pool = pool
         self.vectorize = vectorize
 
         # Initialise Saving space for samples
-        self.samples = samples(self.ndim, self.nwalkers)
+        self.samples = samples(self.ntemps, self.nwalkers, self.ndim)
 
         # Initialise iteration counter and state
         self.iteration = 0
@@ -129,6 +135,8 @@ class EnsembleSampler:
 
         # Light mode
         self.light_mode = light_mode
+        self.adapt = adapt
+        self.hist = hist
 
 
     def run_mcmc(self,
@@ -196,13 +204,13 @@ class EnsembleSampler:
         # Initialise ensemble of walkers
         logging.info('Initialising ensemble of %d walkers...', self.nwalkers)
         if start is not None:
-            if np.shape(start) != (self.nwalkers, self.ndim):
+            if np.shape(start) != (self.ntemps, self.nwalkers, self.ndim):
                 raise ValueError('Incompatible input dimensions! \n' +
                                  'Please provide array of shape (nwalkers, ndim) as the starting position.')
             X = np.copy(start)
+            X = X.reshape(-1,self.ndim)
             if log_like0 is None:
-                Z, Zp, Zl, ncall = self.compute_log_prob(X, self.betas)
-                idx = np.arange(self.nwalkers)
+                Z, Zp, Zl, ncall = self.compute_log_prob(X, self.betas_flat)
             else:
                 Zl = np.copy(log_like0)
                 Zp = np.copy(log_prior0)
@@ -221,7 +229,7 @@ class EnsembleSampler:
         if not np.all(np.isfinite(Z)):
             raise ValueError('Invalid walker initial positions! \n' +
                              'Initialise walkers from positions of finite log probability.')
-        batch = list(np.arange(self.nwalkers))
+        batch = list(np.arange(self.ntemps*self.nwalkers))
 
         # Extend saving space
         self.thin = int(thin)
@@ -259,61 +267,65 @@ class EnsembleSampler:
         # keep distances
         self.distances = []
 
+        self.betas_all = []
+
         # Main Loop
         for i in range(self.nsteps):
 
-            distance = np.zeros(self.nwalkers)
+            distance = np.zeros(self.ntemps*self.nwalkers)
 
             # Initialise number of expansions & contractions
-            nexp = np.zeros(self.nwalkers)
-            ncon = np.zeros(self.nwalkers)
+            nexp = np.zeros(self.ntemps*self.nwalkers)
+            ncon = np.zeros(self.ntemps*self.nwalkers)
 
             # Shuffle and split ensemble
             if self.shuffle_ensemble:
                 np.random.shuffle(batch)
-            batch0 = batch[:int(self.nwalkers/2)]
-            batch1 = batch[int(self.nwalkers/2):]
+            batch0 = batch[:int(self.ntemps*self.nwalkers/2)]
+            batch1 = batch[int(self.ntemps*self.nwalkers/2):]
             sets = [[batch0,batch1],[batch1,batch0]]
 
             # Loop over two sets
             for ensembles in sets:
-                indeces = np.arange(int(self.nwalkers/2))
+                indeces = np.arange(int(self.ntemps*self.nwalkers/2))
                 # Define active-inactive ensembles
                 active, inactive = ensembles
 
-                betas_active = self.betas[active]
+                betas_active = self.betas_flat[active]
 
                 # Compute directions
                 directions = get_direction(X[inactive], self.mu)
+                if np.random.uniform() > 1.0 -self.hist and i>2*self.ndim:
+                    directions = get_past_direction(self.samples, active, self.mu,normalise=True)
 
                 if i > 2:
                     directions *= np.mean(np.array(self.distances)[:,active],axis=0)[:,np.newaxis]
 
                 # Get Z0 = LogP(x0)
-                Z0 = Z[active] - np.random.exponential(size=int(self.nwalkers/2))
+                Z0 = Z[active] - np.random.exponential(size=int(self.ntemps*self.nwalkers/2))
 
                 # Set Initial Interval Boundaries
-                L = - np.random.uniform(0.0,1.0,size=int(self.nwalkers/2))
+                L = - np.random.uniform(0.0,1.0,size=int(self.ntemps*self.nwalkers/2))
                 R = L + 1.0
 
                 # Parallel stepping-out
-                J = np.floor(self.maxsteps * np.random.uniform(0.0,1.0,size=int(self.nwalkers/2)))
+                J = np.floor(self.maxsteps * np.random.uniform(0.0,1.0,size=int(self.ntemps*self.nwalkers/2)))
                 K = (self.maxsteps - 1) - J
 
                 # Initialise number of Log prob calls
                 ncall = 0
 
                 # Left stepping-out initialisation
-                mask_J = np.full(int(self.nwalkers/2),True)
-                Z_L = np.empty(int(self.nwalkers/2))
-                X_L = np.empty((int(self.nwalkers/2),self.ndim))
+                mask_J = np.full(int(self.ntemps*self.nwalkers/2),True)
+                Z_L = np.empty(int(self.ntemps*self.nwalkers/2))
+                X_L = np.empty((int(self.ntemps*self.nwalkers/2),self.ndim))
 
                 # Right stepping-out initialisation
-                mask_K = np.full(int(self.nwalkers/2),True)
-                Z_R = np.empty(int(self.nwalkers/2))
-                X_R = np.empty((int(self.nwalkers/2),self.ndim))
+                mask_K = np.full(int(self.ntemps*self.nwalkers/2),True)
+                Z_R = np.empty(int(self.ntemps*self.nwalkers/2))
+                X_R = np.empty((int(self.ntemps*self.nwalkers/2),self.ndim))
 
-                nexp_prime = np.zeros(int(self.nwalkers/2))
+                nexp_prime = np.zeros(int(self.ntemps*self.nwalkers/2))
 
                 cnt = 0
                 # Stepping-Out procedure
@@ -342,6 +354,7 @@ class EnsembleSampler:
                         Z_L[mask_J] = np.array([])
                         Z_R[mask_K] = np.array([])
                         cnt -= 1
+                        ncall_new = 0
                     else:
                         Z_LR_masked, _, _, ncall_new = self.compute_log_prob(np.concatenate([X_L[mask_J],X_R[mask_K]]),np.concatenate([betas_active[mask_J],betas_active[mask_K]]))
                         Z_L[mask_J] = Z_LR_masked[:X_L[mask_J].shape[0]]
@@ -367,13 +380,13 @@ class EnsembleSampler:
 
 
                 # Shrinking procedure
-                Widths = np.empty(int(self.nwalkers/2))
-                Z_prime = np.empty(int(self.nwalkers/2))
-                Zp_prime = np.empty(int(self.nwalkers/2))
-                Zl_prime = np.empty(int(self.nwalkers/2))
-                X_prime = np.empty((int(self.nwalkers/2),self.ndim))
-                ncon_prime = np.zeros(int(self.nwalkers/2))
-                mask = np.full(int(self.nwalkers/2),True)
+                Widths = np.empty(int(self.ntemps*self.nwalkers/2))
+                Z_prime = np.empty(int(self.ntemps*self.nwalkers/2))
+                Zp_prime = np.empty(int(self.ntemps*self.nwalkers/2))
+                Zl_prime = np.empty(int(self.ntemps*self.nwalkers/2))
+                X_prime = np.empty((int(self.ntemps*self.nwalkers/2),self.ndim))
+                ncon_prime = np.zeros(int(self.ntemps*self.nwalkers/2))
+                mask = np.full(int(self.ntemps*self.nwalkers/2),True)
 
                 cnt = 0
                 while len(mask[mask])>0:
@@ -388,7 +401,6 @@ class EnsembleSampler:
                     Z_prime[mask], Zp_prime[mask], Zl_prime[mask], ncall_new = self.compute_log_prob(X_prime[mask], betas_active[mask])
 
                     # Count LogProb calls
-                    #ncall += len(mask[mask])
                     ncall += ncall_new
 
                     # Shrink slices
@@ -422,39 +434,22 @@ class EnsembleSampler:
             
             self.distances.append(distance)
 
+            X_full = X.reshape(self.ntemps, self.nwalkers, self.ndim)
+            Z_full = Z.reshape(self.ntemps, self.nwalkers)
+            Zp_full = Zp.reshape(self.ntemps, self.nwalkers)
+            Zl_full = Zl.reshape(self.ntemps, self.nwalkers)
+            nexp_full = np.sum(nexp.reshape(self.ntemps, self.nwalkers),axis=1)
+            ncon_full = np.sum(ncon.reshape(self.ntemps, self.nwalkers),axis=1)
+
             # Swap temperatures
-            if np.random.uniform() > 1.0 - self.alpha:
+            X_full, Zp_full, Zl_full, accept, ratio = SwapReplicas(X_full, Zp_full, Zl_full, self.betas, self.alpha)
 
-                schedule = np.arange(self.nwalkers - 1, 0, -1)
+            if self.adapt:
+                self.betas = AdjustBetas(i+1, self.betas, accept)
+                self.betas_all.append(self.betas.copy())
 
-                accept = np.empty(self.nwalkers - 1)
 
-                for j in schedule:
-                    
-                    alpha = min(1, np.exp((self.betas[j-1]-self.betas[j])*(Zl[j]-Zl[j-1])))
-
-                    accept[j-1] = alpha
-
-                    if alpha > np.random.uniform(0,1):
-                        Zl_temp = np.copy(Zl[j-1])
-                        Zl[j-1] = np.copy(Zl[j])
-                        Zl[j] = np.copy(Zl_temp)
-
-                        Zp_temp = np.copy(Zp[j-1])
-                        Zp[j-1] = np.copy(Zp[j])
-                        Zp[j] = np.copy(Zp_temp)         
-                        
-                        X_temp = np.copy(X[j-1])
-                        X[j-1] = np.copy(X[j])
-                        X[j] = np.copy(X_temp)
-
-                        idx_temp = np.copy(idx[j-1])
-                        idx[j-1] = np.copy(idx[j])
-                        idx[j] = np.copy(idx_temp)
-
-                        Z[j-1] = Zl[j-1] * self.betas[j-1] + Zp[j-1]
-                        Z[j] = Zl[j] * self.betas[j] + Zp[j]
-
+            Z_full = Zl_full * self.betas[:,np.newaxis] + Zp_full
 
             # Tune scale factor using Robbins-Monro optimization
             if self.tune:
@@ -473,7 +468,7 @@ class EnsembleSampler:
 
             # Save samples
             if (i+1) % self.ncheckpoint == 0:
-                self.samples.save(X, Z, Zp, Zl, idx, nexp, ncon, accept)
+                self.samples.save(X_full, Z_full, Zp_full, Zl_full, nexp_full, ncon_full, accept)
 
             # Update progress bar
             pbar.update(np.sum(nexp), np.sum(ncon))
@@ -484,11 +479,10 @@ class EnsembleSampler:
             self.state_Z = np.copy(Z)
             self.state_Zp = np.copy(Zp)
             self.state_Zl = np.copy(Zl)
-            self.state_idx = np.copy(idx)
 
             # Yield current state
             if (i+1) % self.ncheckpoint == 0:
-                yield (X, Z, Zp, Zl, idx)
+                yield (X, Z, Zp, Zl)
 
         # Close progress bar
         pbar.close()
@@ -498,7 +492,7 @@ class EnsembleSampler:
         """
         Reset the state of the sampler. Delete any samples stored in memory.
         """
-        self.samples = samples(self.ndim, self.nwalkers)
+        self.samples = samples(self.ntemps, self.nwalkers, self.ndim)
     
 
     def get_chain(self, flat=False, thin=1, discard=0):
@@ -668,6 +662,7 @@ class EnsembleSampler:
             log_prior: A vector of log-prior values with one entry for each walker in this sub-ensemble.
             log_like: A vector of log-likelihood values with one entry for each walker in this sub-ensemble.
         """
+
         p = coords
 
         # Check that the parameters are in physical ranges.
