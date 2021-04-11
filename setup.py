@@ -11,10 +11,10 @@ setuptools.setup(
     version="0.0.1",
     author="Minas Karamanis",
     author_email="minaskar@gmail.com",
-    description="zeus: Lightning Fast MCMC",
+    description="Replica Exchange Slice Sampling",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/minaskar/zeus",
+    url="https://github.com/minaskar/arianna",
     packages=setuptools.find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",

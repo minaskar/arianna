@@ -30,7 +30,7 @@ def get_direction(X, mu):
     return 2.0 * mu * diff
 
 
-def get_past_direction(samples, active, mu, normalise=False):
+def get_past_direction(samples, active, mu, normalise=True):
     r"""
     Generate direction vectors.
 
@@ -47,16 +47,32 @@ def get_past_direction(samples, active, mu, normalise=False):
             Array of direction vectors of shape ``(nwalkers//2, ndim)``.
     """
 
-    history = samples.samples[:samples.index-1,active]
+    history = samples.samples[:samples.index-1]
 
-    nhist, nwalkers, ndim = np.shape(history)
+    nsteps, ntemps, nwalkers, ndim = np.shape(history)
 
-    diff  = np.empty((nwalkers, ndim))
-    for i in range(nwalkers):
-        l, m = np.random.choice(nhist, 2, replace=False)
-        diff[i] = history[l,i]-history[m,i]
+    diff = np.empty((ntemps, nwalkers, ndim))
 
+    for t in range(ntemps):
+        for w in range(nwalkers):
+            x, y = np.random.choice(nsteps*nwalkers,2,replace=False)
+            if x <= nsteps - 1:
+                xi = x
+                xj = 0
+            else:
+                xi = x % nsteps
+                xj = x // nsteps
+
+            if y <= nsteps - 1:
+                yi = y
+                yj = 0
+            else:
+                yi = y % nsteps
+                yj = y // nsteps
+
+            diff[t,w] = history[xi,t,xj] - history[yi,t,yj]
+            
     if normalise:
         diff /= np.linalg.norm(diff, axis=1)[:,np.newaxis]
         
-    return 2.0 * mu * diff
+    return 2.0 * mu * diff.reshape(-1,ndim)[active]

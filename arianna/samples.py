@@ -44,7 +44,6 @@ class samples:
 
             ext = np.empty((n,self.ntemps-1))
             self.accept = np.concatenate((self.accept,ext),axis=0)
-
         else:
             self.samples = np.empty((n,self.ntemps,self.nwalkers,self.ndim))
             self.logp = np.empty((n,self.ntemps,self.nwalkers))
@@ -71,7 +70,7 @@ class samples:
         self.ncons[self.index] = ncon
         self.accept[self.index] = accept
         self.index += 1
-
+        
 
     @property
     def chain(self):
@@ -92,7 +91,7 @@ class samples:
         Returns:
             The total number of samples per walker.
         """
-        length, _, _ = np.shape(self.chain)
+        length, _, _, _ = np.shape(self.chain)
         return length
 
 
