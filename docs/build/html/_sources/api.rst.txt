@@ -7,7 +7,7 @@ API Reference
 The Ensemble Sampler
 ====================
 
-.. autoclass:: arianna.EnsembleSampler
+.. autoclass:: arianna.ReplicaExchangeSampler
     :members:
 
 The Chain Manager
