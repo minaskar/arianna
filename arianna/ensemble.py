@@ -211,7 +211,7 @@ class ReplicaExchangeSampler:
             self.distribute = self.pool.map
 
         # Initialise ensemble of walkers
-        logging.info('Initialising ensemble of %d walkers...', self.nwalkers)
+        logging.info('Initialising %d replicas of %d walkers', self.ntemps, self.nwalkers)
         if start is not None:
             if np.shape(start) != (self.ntemps, self.nwalkers, self.ndim):
                 raise ValueError('Incompatible input dimensions! \n' +
@@ -263,7 +263,7 @@ class ReplicaExchangeSampler:
         
 
         # Define Number of Log Prob Evaluations vector
-        self.neval = np.zeros(self.nsteps, dtype=int)
+        self.ncall = 0
 
         # Define tuning count
         ncount = 0
@@ -301,14 +301,14 @@ class ReplicaExchangeSampler:
                 # Define active-inactive ensembles
                 active, inactive = ensembles                
 
-                X, Z, Zp, Zl, nexp, ncon, ncall, D = Slice(self.compute_log_prob, X, Z, Zp, Zl, nexp, ncon, D,
+                X, Z, Zp, Zl, nexp, ncon, neval, D = Slice(self.compute_log_prob, X, Z, Zp, Zl, nexp, ncon, D,
                                                         self.betas, active, inactive, self.mu,
                                                         self.mean_distance,
                                                         self.maxsteps, self.maxiter, i)
 
 
 
-                self.neval[i] += ncall
+                self.ncall += neval
             
             self.mean_distance += (np.mean(D, axis=1) - self.mean_distance) / (i+1)
 
@@ -334,7 +334,7 @@ class ReplicaExchangeSampler:
                 self.samples.save(X, Z, Zp, Zl, np.sum(nexp,axis=1), np.sum(ncon,axis=1), accept)
 
             # Update progress bar
-            pbar.update(np.sum(nexp), np.sum(ncon), np.mean(accept))
+            pbar.update(np.sum(nexp), np.sum(ncon), np.mean(accept), self.ncall)
 
             # Update iteration counter and state variables
             self.iteration = i + 1
@@ -435,17 +435,6 @@ class ReplicaExchangeSampler:
             ESS
         """
         return self.nwalkers * self.samples.length / np.mean(self.act)
-
-
-    @property
-    def ncall(self):
-        """
-        Number of Log Prob calls.
-
-        Returns:
-            ncall
-        """
-        return np.sum(self.neval)
 
 
     @property

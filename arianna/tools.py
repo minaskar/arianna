@@ -10,13 +10,14 @@ class progress_bar:
         if self.show:
             self.progress_bar = tqdm.tqdm(total=nsteps, desc='Sampling progress')
 
-    def update(self, nexp, ncon, accept):
+    def update(self, nexp, ncon, accept, ncall):
         
         if self.show:
             self.progress_bar.update(1)
             self.progress_bar.set_postfix(ordered_dict={'nexp':nexp,
                                                         'ncon':ncon,
-                                                        'accept':accept
+                                                        'swap':accept,
+                                                        'ncall':ncall
                                                         })
 
     def close(self):
